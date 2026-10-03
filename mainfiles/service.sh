@@ -48,11 +48,35 @@ STATE=$(getprop persist.sys.azenith.state)
 }
 
 # Exec Java Companion Daemon
-nohup app_process -Djava.class.path="$APK_COMP" / \
-    --nice-name=sys.azenith-appmonitoring zx.azenith.AppMonitor \
-    "$MODULE_CONFIG/app_status" \
-    "$MODULE_CONFIG/background_apps" \
-    "$MODULE_CONFIG/java.lock" >"$MODULE_CONFIG/sysmon.log" 2>&1 &
+# FIX: sebelumnya daemon ini cuma dijalanin SEKALI lalu dilepas ke
+# background tanpa pengawasan apapun. Di ROM yang agresif soal
+# background-process management (contoh: HyperOS/MIUI), proses ini
+# bisa dibunuh sistem saat device idle lama / recents dibersihkan,
+# dan karena tidak ada yang mengawasi, dia tidak pernah hidup lagi
+# sampai reboot penuh - menyebabkan Auto Mode berhenti berfungsi
+# tanpa ada indikasi error apapun ke user.
+#
+# Supervisor loop ini memastikan companion daemon otomatis di-restart
+# begitu dia mati karena alasan apapun (crash, OOM-kill, dibunuh OEM
+# process manager, dll), tanpa perlu reboot.
+(
+    while true; do
+        app_process -Djava.class.path="$APK_COMP" / \
+            --nice-name=sys.azenith-appmonitoring zx.azenith.AppMonitor \
+            "$MODULE_CONFIG/app_status" \
+            "$MODULE_CONFIG/background_apps" \
+            "$MODULE_CONFIG/java.lock" >>"$MODULE_CONFIG/sysmon.log" 2>&1
+        echo "$(date '+%Y-%m-%d %H:%M:%S') [supervisor] Companion daemon exited, restarting in 3s..." >>"$MODULE_CONFIG/sysmon.log"
+        sleep 3
+    done
+) &
+
+# Minta device nggak masukin daemon manager ke Doze/App Standby whitelist,
+# biar lebih kecil kemungkinan dibunuh sistem saat idle. Ini best-effort,
+# beberapa OEM custom process-killer (seperti MIUI) tetap bisa mengabaikan
+# whitelist standar Android ini, tapi tetap worth dicoba sebagai lapis
+# proteksi tambahan yang murah.
+dumpsys deviceidle whitelist +zx.azenith >/dev/null 2>&1
 
 # Run AZenith service
 sleep 1 && exec "$BIN_SVC" --run
